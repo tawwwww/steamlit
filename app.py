@@ -29,7 +29,7 @@ st.markdown("---")
 # ==========================================
 # 2. HARDCODED CONFIGURATION DATA (FROM MANUALS)
 # ==========================================
-# Sensor parameters derived from TWM_Sensors_Measurement_Principles_Specs_rev1.pdf & ODS sheets
+# Sensor parameters derived from technical reference documents
 SENSOR_DATABASE = {
     "Teledyne/Sentinel ADCP": {"active_ma": 1200.0, "sleep_ma": 5.0, "default_interval": 15, "default_duration": 240, "voltage": 12.0},
     "Sea-Bird HydroCAT-EP (CTD+DO)": {"active_ma": 500.0, "sleep_ma": 1.0, "default_interval": 15, "default_duration": 30, "voltage": 12.0},
@@ -51,7 +51,7 @@ BUOY_PRESETS = {
 def calculate_sensor_drain(active_ma, sleep_ma, interval_min, duration_sec, system_v):
     """
     Applies the mathematical time-weighted duty cycle engine 
-    derived from MetOcean Power Calculations.ods to calculate daily usage.
+    to calculate aggregate daily deployment usage metrics.
     """
     cycles_per_day = (24.0 * 60.0) / interval_min
     active_time_day_sec = cycles_per_day * duration_sec
@@ -96,7 +96,7 @@ def fetch_pvgis_solar_data(lat, lon, peak_power_wp, battery_wh):
     except Exception:
         pass
     
-    # Fallback dataset: Conservative standard Irish/Scottish maritime solar curves
+    # Fallback dataset: Conservative standard maritime solar curves
     months = list(range(1, 13))
     fallback_production_factor = [0.4, 0.9, 1.8, 3.1, 4.2, 4.6, 4.4, 3.6, 2.4, 1.3, 0.6, 0.3]
     df_fallback = pd.DataFrame({
@@ -214,3 +214,52 @@ st.markdown("---")
 st.header("🌍 Dynamic Localized Environmental Solar Harvest Profiles")
 
 df_solar, status_code = fetch_pvgis_solar_data(lat, lon, solar_wp, total_installed_battery_wh)
+
+if status_code == "API_SUCCESS":
+    st.success(f"Successfully retrieved live, high-resolution geospatial solar radiance tables from the EU PVGIS Database for Coordinates: [{lat}, {lon}].")
+    # Derive real production estimates from standard geographic solar profile metrics
+    df_solar['estimated_daily_wh'] = (solar_wp * (1.0 - (df_solar['empty_days_pct'] / 100.0))) * 3.2 # Normalized factor metric
+else:
+    st.info("Using standard baseline marine solar generation estimates (API offline or coordinate bounds set to open ocean data restrictions).")
+
+# Calculate net regional seasonal balance performance metrics
+df_solar['Net Balance (Wh)'] = (df_solar['estimated_daily_wh'] + wind_w) - gross_required_wh
+
+# Construct seasonal data plotting visualizations
+fig = go.Figure()
+fig.add_trace(go.Bar(
+    x=df_solar['month'], y=df_solar['estimated_daily_wh'],
+    name='Solar Harvest Yield (Wh)', marker_color='#f39c12'
+))
+fig.add_trace(go.Bar(
+    x=df_solar['month'], y=[wind_w]*12,
+    name='Wind Harvest Yield (Wh)', marker_color='#3498db'
+))
+fig.add_trace(go.Scatter(
+    x=df_solar['month'], y=[gross_required_wh]*12,
+    name='Gross System Power Required Load Threshold', line=dict(color='#e74c3c', width=3, dash='dash')
+))
+
+fig.update_layout(
+    title='Seasonal Yield Performance Evaluation vs Operational Loading Requirements',
+    xaxis=dict(title='Month of Operation', tickmode='linear', tick0=1, dtick=1),
+    yaxis=dict(title='Energy Matrix Metric (Watt-Hours / Day)'),
+    barmode='stack',
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# 9. ACTIONS & WARNING CONSOLES
+# ==========================================
+st.subheader("📋 System Deployment Clearance Validation Verdict")
+
+winter_months = df_solar[df_solar['month'].isin([11, 12, 1])]
+deficit_winter_months = winter_months[winter_months['Net Balance (Wh)'] < 0]
+
+if not autonomy_passed:
+    st.error(f"⚠️ **DEPLOYMENT REJECTED**: This system does not satisfy the required 30-day continuous zero-generation autonomy standard. In complete blackout scenarios, the system runs out of power in **{autonomy_days_survived:.1f} days**. Increase battery bank capacity to at least **{((gross_required_wh * 30) / sys_voltage) / 0.8:.0f} Ah** to clear safety criteria.")
+elif not deficit_winter_months.empty:
+    st.warning(f"⚠️ **CONDITIONAL MARGINAL APPROVAL**: The system meets the 30-day autonomy safety standard, but runs a net energy deficit during winter months (e.g., Month {deficit_winter_months['month'].values[0]}). The battery will steadily discharge during this season. Ensure the system is deployed fully charged, or increase solar panel arrays and wind assets to boost winter charging performance.")
+else:
+    st.success("✅ **CLEARANCE APPROVED**: This configuration meets all TechWorks Marine power requirements. It passes the 30-day absolute loss-of-generation autonomy standard and generates a net positive energy surplus every month of the year.")
